@@ -1,0 +1,714 @@
+---
+title: "Aplicación de modelos de Regresión Logística en la Encuesta Nacional de Consumos Culturales 2017"
+author: "F. Ayelén Opazo y Magali Rodrigues Pires"
+date: "5 de diciembre de 2021"
+output:
+  html_notebook:
+    toc: yes
+    toc_float: yes
+    df_print: paged
+  html_document:
+    toc: yes
+    df_print: paged
+---
+
+<style type="text/css">
+div.main-container {
+  max-width: 1600px;
+  margin-left: auto;
+  margin-right: auto;
+}
+</style>
+
+**Enfoque Estadístico del Aprendizaje / TP2 **
+
+## Planteo del Problema
+
+El objetivo general de este trabajo es generar una serie de modelos de regresión que permitan **explicar y predecir la asistencia al teatro, al cine y/o a espectáculos de música en vivo a partir de determinada información sociodemográfica**. 
+
+Para ello trabajaremos con los datos que provienen de la edición 2017 de la *Encuesta Nacional de Consumos Culturales*, elaborada por el Sistema de Información Cultural de Argentina (SInCA) que pertenece al Ministerio de Cultura de la Nación. La ENCC se realiza cada cuatro años y busca conocer en profundidad el comportamiento de la población argentina respecto de los hábitos y consumos culturales. Indaga acerca de las frecuencias de consumo, el equipamiento cultural, el tiempo promedio de consumo o práctica, el grado de digitalización de los consumos culturales, las formas de realización de los consumos, los soportes utilizados, entre otros aspectos.
+
+Según el informe *Mujeres en la Cultura* publicado por el SInCA, 8 de cada 10 personas que respondieron que no asisten a recitales por “motivos familiares, como tener hijos pequeños”, son mujeres. Al mismo tiempo, de cada 10 mujeres que fueron a recitales en 2017, 3 son sostén de hogar (entre los hombres la relación es más pareja: 5 de cada 10).
+
+Partimos de la *hipótesis* de que las mujeres con hijxs y/o que conviven con personas mayores de 65 años van al cine, al teatro y a recitales en menor medida que los varones en la misma condición.  En este sentido, buscamos predecir si una persona asistió en el último año o no a alguna de las tres actividades mencionadas, a partir de sus características sociodemográficas. Utilizaremos modelos de  *regresión logística* ya que son los más eficientes para problemas de predicción de clases.
+
+```{r}
+message = FALSE
+```
+
+
+```{r}
+# Cargamos librerías
+
+library(readr)
+library(tidyverse)
+library(tidymodels)
+library(modelr)
+library(GGally)
+library(pROC)
+library(cowplot)
+library(OneR)
+library(rlang)
+library(caret)
+library(janitor)
+library(corrr)
+library(knitr)
+library(kableExtra)
+library(gridExtra)
+```
+
+## Exploración de los datos
+
+En este primer apartado confeccionamos el dataset con el que vamos a trabajar, a partir del dataset original de la Encuesta Nacional de Consumos Culturales. También llevamos a cabo una exploración inicial de las distribuciones de los datos, a partir de la apertura por la variable target. 
+
+### Confección del dataset de trabajo y análisis de su estructura
+
+El dataset completo de la Encuesta Nacional de Consumos Culturales tiene 2802 observaciones (respuestas) y 450 columnas (que refieren a las 117 preguntas del cuestionario). Tomando como guía la hipótesis de trabajo, armamos una versión resumida del dataset en la que conservaremos solo las variables que resultan pertinentes al problema. 
+
+```{r}
+#cargamos el dataset original
+consumos <- read.csv("C:/Users/magal/OneDrive/Escritorio/EEA/tp2/encc17/encc_2017.csv", encoding = 'UTF-8')
+
+#armamos la versión resumida con la que vamos a trabajar
+consumos <- data.frame(consumos[,c(1,2,4:6,402,403,406,82,83,85,86,205,206,208,209,227,228)])
+
+#visualizamos su estructura
+glimpse(consumos)
+
+```
+```{r}
+#eliminamos fila con error de carga
+consumos = consumos[-2740,]
+```
+```{r}
+#eliminamos fila con error de carga
+consumos = consumos[-1950,]
+```
+
+Las *variables* del set incluyen id, **sexo** de la persona encuestada, **edad**, **región** de residencia, así como también:
+
+- p104_1: ¿Cuántas personas (con la que convive) son **menores de 15 años**?
+- p104_2: ¿Cuántas personas (con la que convive) son **mayores de 65 años**?
+- p107: ¿Podría decirme cuál es la persona que más aporta a los gastos del hogar, es decir, el **principal sostén económico del hogar** (PSH)? 
+- p23: ¿Concurrió a recitales o presentaciones de **música en vivo** durante el último año? 
+- p23_1 [solo para quienes responden NO en p23]: ¿Cuál es el motivo principal por el que no concurre a recitales?
+- p23_2 [solo para quienes responden NO en p23]: Anteriormente, ¿Aconstumbraba a ir a recitales?
+- p24 [solo para quienes responden SI en p23]: ¿Con qué frecuencia concurrió a recitales el último año?
+- p63: ¿Concurrió al **cine** el último año?
+- p63_1 [solo para quienes responden NO en p63]: ¿Cuál es el motivo principal por el que no concurre al cine?
+- p63_2 [solo para quienes responden NO en p63]: Anteriormente, ¿Aconstumbraba a ir al cine?
+- p64 [solo para quienes responden SI en p63]: ¿Con qué frecuencia concurrió al cine el último año?
+- p68: ¿Concurrió a **espectáculos teatrales** el último año?
+- p69 [solo para quienes responden SI en p68]: ¿Con qué frecuencia concurrió a espectáculos teatrales el último año?
+
+
+Se observa que las variables seleccionadas pueden agruparse en dos bloques: aquellas relacionadas con las *prácticas culturales* de las personas entrevistadas y las relacionadas con su *información sociodemográfica*.
+
+La *pregunta 104* fue incluída porque nos interesa analizar, entre otras cosas, si el hecho de convivir con niñxs, adolecentes y/o adultos mayores está relacionado con la frecuencia de asistencia a prácticas culturales de la persona entrevistada, partiendo de la hipótesis de que tener a cargo tareas de cuidado puede interferir en la  concurrencia a este tipo de actividades. En este sentido, nos interesa analizar si la relación entre ambas variables es similar o no entre varones y mujeres. 
+
+*Creación de la variable dicotómica "convive_niñxs_adultosmayores"*. Las variables originales de la pregunta 104 registran la cantidad de menores de 15 años o mayores de 65 años que conviven con la persona entrevistada. Se dicotomizaron ambas variarbles y se creó una nueva que toma valor 1 si la persona entrevistada **convive con al menos un menor de 15 años y/o al menos un mayor de 65**.
+
+
+```{r}
+#se reemplazan los valores NA por 0 (refieren a las personas que viven solas y no respondieron estas preguntas)
+consumos <- mutate_at(consumos, c("p104_1", "p104_2"), ~replace(., is.na(.), 0))
+
+#Se dicotomizan las varibales p104_1 / p104_2
+consumos$p104_1_RECAT <- ifelse(consumos$p104_1 != 0, 1, 0)
+consumos$p104_2_RECAT <- ifelse(consumos$p104_2 != 0, 1, 0)
+
+#se crea una nueva columna que se llama “convive_niñxs_adultosmayores” y toma valores 1 si la persona encuestada vive con menores de 15 años y/o mayores de 65
+consumos <- consumos %>% 
+  mutate(convive_niñxs_adultosmayores = case_when(p104_1_RECAT == 1 | p104_2_RECAT == 1 ~ 1))
+
+#se reemplazan los valores NA por 0
+consumos <- mutate_at(consumos, c("convive_niñxs_adultosmayores"), ~replace(., is.na(.), 0))
+```
+
+```{r}
+## La transformamos en una variable categórica
+consumos = consumos %>% 
+  mutate(convive_niñxs_adultosmayores = case_when(convive_niñxs_adultosmayores== 1 ~ "SI",
+                                        convive_niñxs_adultosmayores== 0 ~ "NO"))
+```
+
+
+*Creación de la variable categórica "franja_etaria"*. La variable edad en el dataset original es una variable continua. Aplicamos el mismo criterio de construcción de franjas etarias que el Sistema de Información Cultural de Argentina (SInCA) y la discretizamos. 
+
+```{r}
+#transformamos la variable edad en numérica
+consumos$edad <- as.numeric(consumos$edad)
+
+#creamos la variable franja_etaria
+consumos$franja_etaria = cut(consumos$edad,
+                              breaks = c(12,17,29,49,64,92),
+                              labels = c("de12a17","de18a29", "de30a49", "de50a64", "65omás"))
+                                   
+```
+
+
+### Definimos nuestra variable target: asistencia al cine, al teatro y/o a un espectáculo musical en el último año
+
+Lo que nos interesa predecir es si la persona entrevistada fue al cine, al teatro y/o a un recital en vivo el último año, a partir de sus características sociodemográficas. Agrupamos estas tres variables en una nueva dicotómica **"asistencia"**, que expresa 1= "Sí, asistió al menos a uno de estos eventos en el último año" o 0= "No asistió a ninguno". A continuación, analizamos sus distribuciones por separado y la relación con el resto de las variables. 
+
+```{r}
+consumos %>% tabyl(p23)%>% #asistió a recitales
+  arrange(desc(percent), n)%>%
+  fashion()
+consumos %>% tabyl(p63)%>% #asistió a cines
+  arrange(desc(percent), n)%>%
+  fashion()
+consumos %>% tabyl(p68)%>% #asistió a teatros
+  arrange(desc(percent), n)%>%
+  fashion()
+```
+
+Vemos que hay mayor desbalance de clases en la asistencia teatros, seguido por asistencia a recitales y, finalmente, a los cines.
+
+
+```{r}
+#Generamos la nueva variable
+consumos <- consumos %>% 
+  mutate(asistencia = case_when(p23=="SI" |  p68=="SI" |  p63=="SI" ~ 1,
+                                 TRUE ~ 0))
+
+```
+
+```{r}
+#observamos su distribución
+consumos %>% tabyl(asistencia)%>% 
+  arrange(desc(percent), n)%>%
+  fashion()
+```
+
+El 52% de las personas entrevistadas asistió al cine, al teatro y/o a un espectáculo de música en vivo el último año. Mientras que el 47% no lo hizo. 
+
+
+```{r, message=FALSE, fig.width=12, fig.height=6}
+
+# graficamos con ggpairs coloreando por variable a predecir
+g <- consumos %>% 
+        select("asistencia","sexo","region", "franja_etaria", "p107", "convive_niñxs_adultosmayores") %>% 
+        ggpairs(title = "Apertura por variable target: asistencia al cine, al teatro y/o a recitales en el último año",
+                mapping = aes(colour= factor(asistencia)),
+                progress = FALSE, 
+                lower=list(combo=wrap("facethist", binwidth=0.8)), legend = 25) +
+        theme(axis.text.x = element_text(angle = 90, hjust = 1)) + 
+        theme_bw() +
+        scale_fill_brewer(palette="Set1") +
+        scale_color_brewer(palette="Set1")
+g
+```
+
+Al realizar la apertura por la variable target, en el análisis gráfico se observa que la clase *asistencia* es facilmente discriminable, ambas categorías se separan con bastante claridad. Recordemos que las clases estan bastante balanceadas.
+
+Vemos que para la variable *sexo* las distribuciones de asistencia son proporcionales tanto para mujeres como para varones, siendo del total de mujeres encuestadas la mitad, aproximadamente, las que asisten a eventos de este tipo; al igual que para el caso de los varones: apenas un poco más de la mitad de los encuestados asistieron en el último año al cine, al teatro y/o a recitales.
+
+Para el caso de la variable que creamos *convive_niñxs_adultosmayores* ocurre algo similar que para la variable *sexo*: de los que sí conviven con niñxs, adolecentes y/o adultos mayores (que son la mayoría de las personas encuestadas) aproximadamente la mitad sí asistió a eventos en el último año y la otra mitad no asistió, mientras que dentro de los que no conviven con niñxs o adultos mayores, es un poco más la cantidad de los que sí asisten.
+Veamos ahora el caso de las personas que convien con niñxs, adolecentes y/o adultos mayores que asistieron a espectáculos durante el último año vs. los que no lo hicieron, según sexo: nuevamente se observa que hay una distribución bastante pareja entre mujeres y varones.
+
+Por otro lado, si observamos con mayor detalle, las variables *franja_etaria* y *región de residencia* son las que presentan mayores variaciones. También hay mayor variabilidad en las variable *p107*, principal sostén económico (PSE). Lo cual resulta interesante para analizar adicionalmente en los modelos que siguen.  
+
+
+Finalmente, visualizamos las primeras seis filas de nuestro dataset de trabajo definitivo.
+
+```{r}
+head(consumos)
+```
+
+
+## Modelo de Regresión Logística
+
+En este apartado creamos una serie de modelos simples y múltiples de regresión logística e interpretamos sus coeficientes. 
+
+Queremos estimar **P(Asistió=1|X)=P(X)** para cada individuo y a partir de ello poder definir un punto de corte para predecir quiénes asistieron al cine, al teatro y/o a espectáculos de música en vivo el último años y quienes no.
+
+### Partición del dataset en *Test* y *Train*
+
+Para evaluar los modelos vamos a realizar una partición entre dataset de entrenamiento (75%) y testeo (25%) usando la función *initial_split* del paquete rsample de tidymodels. El dataset de entrenamiento quedará con un total de 2100 casos y el de testeo, con 700.
+
+```{r}
+# Fijamos semilla
+set.seed(2021)
+
+# Partición Train y Test, indicando proporción
+train_test <- initial_split(consumos, prop = 0.75)
+train_data <- training(train_test)
+test_data <- testing(train_test)
+
+# Vemos las dimensiones de cada particion
+train_data %>%
+  dim_desc() 
+test_data %>%
+  dim_desc()
+```
+
+Resulta pertinente analizar las **distribuciones de la variable target** en ambos datasets.
+
+```{r}
+# calculamos la distribución de clase en cada dataset
+train <- train_data %>% 
+  group_by(asistencia) %>% 
+  summarise(numero_casos=n()) %>%
+  mutate(prop = round(prop.table(numero_casos)*100,2))
+test <- test_data %>% 
+  group_by(asistencia) %>% 
+  summarise(numero_casos=n()) %>%
+  mutate(prop = round(prop.table(numero_casos)*100,2))
+
+# armamos una tabla conjunta para graficar
+distrib = cbind(rbind(train, test), dataset = c("train", "train", "test", "test"))
+distrib
+
+# graficamos las distribuciones
+ggplot(distrib, aes(x = asistencia, y = prop, fill = factor(asistencia), label = prop)) + 
+  geom_bar(stat="identity", position = "dodge") + facet_wrap(~ dataset) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  labs(x = "Asistencia al cine, teatro y/o recitales en el último año", y = "Proporción en %", title = "Proporción de asistencia por dataset") + 
+  theme_bw() +
+  scale_fill_brewer(palette="Set1")
+
+```
+
+Observamos que prácticamente *no existe desbalance en las clases de la variable a predecir*. Esto es importante porque clases desbalanceadas pueden afectar las estimaciones del modelo y su clasificación final.   
+
+
+### Creación de modelos
+
+La **Regresión Logística es una de las aplicaciones posibles de los Modelos Lineales Generalizados (GLM)**. 
+La funcíón glm(), al igual que la función lm(), toma como argumentos una formula y los datos, pero este caso también se debe especificar el argumento family: indicamos la distribución del error y la función link que vamos a utilizar en el modelo.
+
+Algunas familias son:
+
+- Binomial: link=logit
+
+- Poisson: link=log
+
+- Gaussiana: link=identidad
+
+Como estamos trabajando con un fenómeno que suponemos tiene una distribución binomial, así lo especificamos en el parámetro family. A continuación, realizamos una serie de modelos de regresión logística para predecir la asistencia o no al cine, teatro y/o recitables en el último año de las personas entrevistadas, en función las características sociodemográficas seleccionadas.
+
+Para **crear varios modelos de regresión logística** utilizamos la función `formulas` del paquete **modelr**, creamos así un objeto que contiene todas las fórmulas que vamos a utilizar. En `.response` especificamos la variable respuesta de nuestras fórmulas y luego nombramos las fórmulas que queramos armar.
+
+Luego de crear las formúlas, creamos los modelos y los analizamos de forma comparativa.
+
+```{r}
+# Creación de fórmulas
+logit_formulas <- formulas(.response = ~ asistencia,
+                           convive = ~ convive_niñxs_adultosmayores, 
+                           region = ~ region,
+                           sexo = ~ sexo, 
+                           franja_etaria = ~ franja_etaria, 
+                           PSE = ~ p107,
+                           sexo_PSE = ~ sexo + p107, 
+                           sexo_convive = ~ sexo + convive_niñxs_adultosmayores, 
+                           convive_region_PSE = ~ convive_niñxs_adultosmayores + region + p107,
+                           franja_region_PSE = ~ franja_etaria + region + p107,
+                           )
+
+logit_formulas # observamos el objeto formulas
+```
+Procedemos a crear los modelos a partir de estas fórmulas.
+
+```{r, warning=FALSE}
+models <- data_frame(logit_formulas) %>% # dataframe a partir del objeto formulas
+  mutate(models = names(logit_formulas), # columna con los nombres de las formulas
+         expression = paste(logit_formulas), # columna con las expresiones de las formulas
+         mod = map(logit_formulas, ~glm(., family = 'binomial', data = train_data))) 
+models
+```
+
+
+### Interpretación: Modelos simples
+
+Analizamos los primeros cinco modelos, aquellos que tienen un único predictor. Usamos la función _tidy_ para obtener los parámetros estimados para estos cinco modelos.
+
+
+```{r, warning=FALSE}
+models %>% 
+  filter(models %in% c('region','sexo','franja_etaria','convive','PSE')) %>%
+  mutate(tidy = map(mod, tidy)) %>%
+  unnest(tidy) %>% 
+  mutate(estimate=round(estimate,5), # redondeamos valores para facilitar lectura
+         p.value=round(p.value,4))
+
+```
+
+#### Interpretación de los coeficientes:
+
+**Modelo convive**
+
+β0 = 0.23136 corresponde a las personas que no conviven con niñxs, adolecentes y/o aldultos mayores.
+
+β1 = -0.18525 representa a las personas que conviven con niñxs, adolecentes y/o adultos mayores y el signo negativo del coeficiente indica que la probabilidad de asistencia al cine, teatro y/o recitales en el último año se reduce en comparación con los que no conviven. El p-valor>0.05 indica que se trata de una diferencia estadísticamente significativa.
+
+**Modelo región**
+
+β0 = 0.93982 corresponde a las personas entrevistadas que viven en CABA.
+
+β1 a β6 = Los coeficientes estimados en todos casos son negativos, indicando que la probabilidad de haber asistido al cine, teatro y/o recitales en el último año de las personas que viven en las distintas regiones del país disminuye en comparación con las personas que viven en CABA.  Obervando los valores de los coeficientes, las categorías se pueden ordenar de menor a mayor. En este sentido, es esperable que la probabilidad de haber asistido al cine, teatro y/o recitales en el último año sea aún menor para el NOA (-1.43) que para la quienes viven en la región CENTRO (-0.38).
+
+En todos los casos, los p-valores son menores que 0.05, lo cual indica que las diferencias con CABA (categoría basal) son estadísticamente significativas.
+
+**Modelo sexo**
+
+β0 = 0.13887 corresponde a las mujeres entrevistadas.
+
+β1 = -0.06052 representa a los varones entrevistados e indica que la probabilidad de asistencia al cine, teatro y/o recitales se reduce en comparación a las mujeres. Sin embargo, el p-valor>0.05 indica que no se trata de una diferencia estadísticamente significativa. 
+
+
+**Modelo franja_etaria**
+
+β0 = 0.83704 corresponde a las personas entrevistadas que tienen entre 12 y 17 años.
+
+β1 a β4 = Los coeficientes estimados en todos casos son negativos, indicando que la probabilidad de haber asistido al cine, al teatro y/o a recitales en el último año de las personas de 18 años o más disminuye en comparación con los más jóvenes.  Obervando los valores de los coeficientes, las categorías se puede ordenar de menor a mayor. En este sentido, es esperable que la probabilidad de haber asistido al cine en el último año sea aún menor para las personas de 65 años o más (-1.90) que para la quienes tienen entre 18 y 29 años (-0.18).
+Al mirar los p-valores, se observa que sólo para la franja etaria de 18 a 29, la diferencia con la categoría basal (personas de 12 a 17) no es estadíticamente significativa (p-valor>0.05). 
+
+
+**Modelo PSE (Principal Sostén Económico del Hogar)**
+
+β0 = -0.15415 corresponde a las personas entrevistadas que son el principal sostén económico de hogar (PSE).
+
+β1 = 0.55218 representa a quienes no son el PSE. El signo positivo del coeficiente indica que la probabilidad de asistencia al cine, al teatro y/o a recitales en el último año es mayor para quienes no son jefxs de hogares que para quienes sí lo son. El p-valor<0.05 indica que se trata de una diferencia estadísticamente siginficativa. 
+
+
+
+### Interpretación: Modelos múltiples
+
+A continuación analizamos los cuatro modelos múltiples.
+
+```{r, warning=FALSE}
+models %>% 
+  filter(models %in% c('sexo_PSE','sexo_convive','convive_region_PSE', 'franja_region_PSE')) %>%
+  mutate(tidy = map(mod, tidy)) %>%
+  unnest(tidy) %>% 
+  mutate(estimate=round(estimate,5), # redondeamos valores para facilitar lectura
+         p.value=round(p.value,4))
+
+```
+#### Interpretación de los coeficientes:
+
+**Modelo sexo_PSE**
+
+β0 = -0.21203. Al tratarse de un modelo con dos variables explicativas categóricas, el Intercept representa en este caso a las mujeres que son el principal sostén económico de sus hogares.
+
+β1 = 0.09241. Corresponde a la categoría *varón* de la variable *sexo*. Se observa que el coeficiente es positivo. Esto significaría que la probabilidad de asistencia al cine, al teatro y/o a recitales es mayor respecto a la de las mujeres, dadas las demás variables del modelo. Sin embargo, el p-valor>0.05 indica que no se trata de una diferencia estadísticamente significativa. 
+
+β2 = 0.57689. Corresponde a la categoría *otro miembro del hogar* de la variable *PSE*. Se observa que el coeficiente es positivo. Esto significa que la probabilidad de asistencia es mayor respecto a la de las personas que son el principal sostén económico del hogar donde viven, dadas las demás variables del modelo. El p-valor<0.05 indica que se trata de una diferencia estadísticamente significativa. 
+
+**Modelo sexo_convive**
+
+β0 = 0.26772. En este caso, el Intercept representa a las *mujeres* que *no conviven con niñxs, adolecentes y/o adultos mayores*.
+
+β1 = -0.06854 y β2 = -0.18851. Ambos coeficientes son negativos, por lo que representarían una probablilidad menor de asistencia al cine en el último año para *ambas categorías*, dadas las demás variables del modelo. Sin embargo, al mirar los p-valores, se observa que sólo el hecho de convivir o no con niñxs, adolecentes y/o adultos mayores representa una diferencia estadísticamente significativa (p-valor=0.0420). 
+
+**Modelo convive_region_PSE**
+
+β0 = 0.79411. En este caso, el Intercept representa a las personas que no conviven con niñxs, adolecentes ni adultos mayores, que viven en CABA y son el principal sostén económico del hogar donde viven.
+
+β1 = -0.22181. Corresponde a las personas que conviven con niñxs, adolecentes y/o adultos mayores. El signo negativo del coeficiente indica que la probablidad de haber asistido al cine, al teatro y/o a recitales en el último año disminuye, en comparación con las personas que no conviven con niñxs, adolecentes ni adultos mayores. El p-valor < 0.05, indica que se trata de una diferencia estadísticamente significativa. 
+
+
+β2 a β7. Corresponden a las personas que no viven en CABA. En línea con lo que se obervó en el modelo simple, todos los coeficientes son negativos, por lo que en las seis regiones del país analizadas la probablidad de haber asistido al cine, al teatro y/o a recitales en el último año disminuye en relación a quienes viven en CABA. Los p-valores<0.05 indican que las diferencias son estadícticamente significativas en todos los casos. 
+
+
+β8= 0.66663. Correspode a las personas que no son el principal sostén económico del hogar. El coeficiente positivo significa que las personas que no son el PSE, tienen una probablidad mayor de haber asistido al cine, al teatro y/o a recitales el último año, en comparación con las que sí lo son, dadas el resto de las variables del modelo. El p-valor<0.05 indica que se tarta de una diferencia estadícticamente significativa. 
+
+
+**Modelo franja_region_PSE**
+
+β0 = 1.86907. En este caso, en el Intercept representa a las personas entre 12 y 17 años, que viven en CABA y son el principal sostén económico del hogar donde viven.
+
+β1 a β4. Corresponde a las personas de 18 años o más, divididas por franjas etarias. En línea con lo que se obervó en el modelo simple, todos los coeficientes son negativos, por lo que para las personas mayores de 18 años la probablidad de haber asistido disminuye en relación a quienes son menores de edad. Los p-valores<0.05 (en todos los casos, menos para las personas que tienen entre 18 y 29 años) indican que las diferencias son estadícticamente significativas.
+
+
+β5 a β10. Corresponden a las personas que no viven en CABA. Como en el modelo anterior, todos los coeficientes son negativos, por lo que en las seis regiones del país analizadas la probablidad de haber asistido al cine, al teatro y/o a recitales en el último año disminuye en relación a quienes viven en CABA, dadas el resto de las variables del modelo. Los p-valores<0.05 indican que las diferencias son estadícticamente significativas en todos los casos. 
+
+β11= 0.04920. Correponde a las personas que no son el principal sostén económico del hogar en el que viven. El coeficiente de signo positivo indicaría que las personas que no están a cargo económicamente de su hogar tienen mayor probabilidad de haber ido al cine, al teatro y/o a recitales en el último año que quienes sí lo están, dadas el resto de las variables del modelo. Sin emabrgo, el p-valor>0.05 indica que no se trata de una diferencia estadísticamente significativa. 
+
+
+## Evaluación de todos los modelos
+
+El paso siguiente es evaluar los modelos de forma comparativa para analizar cuál de ellos son los que minimizan la **deviance** (como expresión de los residuos).  
+
+Con map() agregamos la función glance para traer información relevante para la evaluación del modelo. Con unnest() accedemos a dicha información. Por último, agregamos una columna con el porcentaje de deviance explicado por cada modelo y ordenamos el dataset según su valor de deviance.
+
+```{r, warning=FALSE}
+# Calcular las medidas de evaluación para cada modelo
+models <- models %>% 
+  mutate(glance = map(mod,glance))
+
+# Obtener las medidas de evaluacion de interes
+models %>% 
+  unnest(glance) %>%
+  
+  # Calculamos la deviance explicada
+  mutate(perc_explained_dev = 1-deviance/null.deviance) %>% 
+  select(-c(models, df.null, AIC, BIC)) %>% 
+  arrange(deviance)
+```
+
+Se observa que el modelo que más reduce la deviance del modelo (como expresión de los residuos) es el que incluye como variables explicativas la franja etaria a la que pertenece la persona entrevistada, la región del país en la que vive y si es o no el principal sostén económico de su hogar (PSE). A partir del cáclulo de *deviance explicada*, observamos que dicho modelo explica aproximadamente el 12% de la variabilidad del fenómeno que buscamos captar. 
+
+
+### Gráficos de Evaluación
+
+A continuación, graficamos las métricas del mejor modelo hallado (**asistencia~ franja_etaria + region + p107**) vs. el de mayor deviance (**asistencia~ sexo**)
+
+Comenzamos agregando las predicciones con `augment` con el parámetro `type="response"`. La función augment hereda el argumento type.predict de la función predict.
+
+  * Si `type.predict = 'link'` la predicción es en términos de la función link. En nuestro caso son el logaritmo de las odds, es decir, los valores que toma la expresión logit.
+  
+  * Si `type.predict = 'response'` la predicción son las probabilidades de que la observación pertenezca a la clase positiva. En nuestro caso, devuelve la probabilidad de la que persona haya asistido al cine, al teatro y/o a recitales durante el último año.
+
+```{r, warning=FALSE}
+# Añadir las predicciones
+models <- models %>% 
+  mutate(pred= map(mod, augment, type.predict = "response"))
+
+#Observaciones con probabilidad más baja (MEJOR MODELO)
+models$pred$franja_region_PSE %>% arrange(.fitted) %>% head(10)
+#Observaciones con probabilidad más alta (MEJOR MODELO)
+models$pred$franja_region_PSE %>% arrange(desc(.fitted)) %>% head(10)
+```
+
+Guardamos las predicciones para los modelos mencionados.
+
+```{r}
+# Modelo bueno
+prediction_full <- models %>% 
+  filter(models=="franja_region_PSE") %>% 
+  unnest(pred)
+#Modelo malo
+prediction_bad <- models %>% 
+  filter(models=="sexo") %>% 
+  unnest(pred)
+```
+
+1) Graficamos **violin plots**.
+
+```{r}
+# graficamos el modelo completo
+violin_full = ggplot(prediction_full, aes(x=asistencia, y=.fitted, group=asistencia, fill=factor(asistencia))) + 
+  geom_violin() +
+  theme_bw() +
+  guides(scale="none") +
+  labs(title='Violin plot', subtitle='Modelo bueno', y='Predicted probability')
+# graficamos el modelo malo
+violin_bad = ggplot(prediction_bad, aes(x=asistencia, y=.fitted, group=asistencia, fill=factor(asistencia))) + 
+  geom_violin() + 
+  theme_bw() +
+  guides(scale="none") +
+  labs(title='Violin plot', subtitle='Modelo malo', y='Predicted probability')
+# mostramos ambos
+plot_grid(violin_bad, violin_full)
+```
+
+En los gráficos de violin observamos: En el eje de abscisas la clase verdadera (asistió o no asistió en el último año al teatro, al cino y/o a un recital). En el eje de ordenadas la probabilidad predicha por nuestro modelo. El gráfico nos muestra la distribución de la cantidad de observaciones por su clase real y la probabilidad que le asigna nuestro modelo.
+
+Lo que observamos en el modelo "franja_region_PSE" (modelo bueno) es que para el valor real 1 (asistió), la mayor parte de las observaciones se concentran en la mitad superior del gráfico, que corresponde a las probabilidad predichas más altas de pertenecer a la clase 1. Lo inverso, aunque con menor claridad, se observa para el valor 0 (no asistió).
+
+
+2) Realizamos a continuación el **gráfico de Hosmer-Lemeshow**.
+
+Se genera una función para realizar un gráfico de Hosmer-Lemeshow para un dataset. Para ello se fijan los siguientes parámetros:
+
+- dataset: conjunto de datos
+
+- predicted_column: columna con la probabilidad predicha
+
+- class_column: columna con la clase a predecir
+
+- possitive_value: valor de la clase a predecir
+
+- bins: cantidad de grupos del gráfico
+
+- color: color de los puntos
+
+- nudge_x: desplazamiento de la etiqueta en el eje x
+
+- nudge_y: desplazamiento de la etiqueta en el eje y
+
+
+```{r, message=FALSE, warning=FALSE}
+
+  # Función para generar los gráficos
+Hosmer_Lemeshow_plot <- function(dataset, predicted_column, class_column, bins, positive_value, color='forestgreen', nudge_x=0, nudge_y=0.05){
+  
+  # Asignar los grupos a las observaciones de acuerdo a la probabilidad predicha
+  dataset['group'] <- bin(dataset[predicted_column], nbins = bins, method = 'l', labels=c(1:bins))
+  
+  # Contar la cantidad de casos positivos por grupo
+  positive_class <- dataset %>% filter(!!sym(class_column)==positive_value) %>% group_by(group) %>% count()
+  
+  # Obtener la media de las predicciones por grupo
+  HL_df <- dataset %>% group_by(group) %>% summarise(pred=mean(!!sym(predicted_column)), count=n()) %>%
+            inner_join(.,positive_class) %>%
+            mutate(freq=n/count)
+  # Gráfico 
+  HM_plot <- ggplot(HL_df, aes(x=pred, y=freq)) + 
+    geom_point(aes(size=n), color=color) +
+    geom_text(aes(label=n),nudge_y = nudge_y)+
+    geom_abline(slope = 1, intercept = 0, linetype='dashed') + 
+    theme_bw() +
+    labs(title='Hosmer-Lemeshow', size='Casos', x="Probabilidad Predicha", y="Frecuencia observada")
+  return(HM_plot)
+}
+
+```
+
+Generamos los gráficos pasandole los parámetros. 
+
+```{r, message=FALSE, warning=FALSE}
+# modelo bueno
+Hosmer_Lemeshow_plot(prediction_full, '.fitted', 'asistencia', 10, 1, color = "forestgreen") +
+  labs(subtitle="Modelo bueno")
+# modelo malo
+Hosmer_Lemeshow_plot(prediction_bad, '.fitted', 'asistencia', 10, 1, color = "firebrick") + labs(subtitle="Modelo malo")
+
+```
+
+En los gráficos de Hosmer-Lemeshow observamos:
+
+- En el eje de abscisas la probabilidad predicha de supervivencia.
+
+- En el eje de ordenadas la frecuencia de clase, el cociente entre cantidad de individuos Survived y el total de individuos.
+
+- La línea punteada designa la igualdad entre probabilidad predicha y frecuencia de clase.
+
+- Los círculos, que se construyen de la siguiente manera:Se dividen a las observaciones en bins en base a la probabilidad predicha. Se calcula la frecuencia de clase para cada bin. En base a estas dos coordenadas se ubica al círculo en el gráfico. El número y tamaño indican la cantidad de observaciones en dicho grupo.
+Aquellos círculos que se ubiquen por encima de la línea punteada indican que el modelo está subestimando la probabilidad para dichos grupos. Mientras que si los círculos se ubican por debajo el modelo está sobreestimando la probabilidad para dichos grupos.
+
+El el modelo  **asistencia~ franja_etaria + region + p107** observamos que la mayoría de los circulos se ubican sobre la línea punteada. Es decir, se presenta mayor igualdad entre probabilidad predicha y frecuencia de **asistencia**. Sin embargo pareciera existir cierta sobreestimación de la probabilidad (alrededor de 0.68) para 84 observaciones de poco más de 0.60 de frecuencia observada. Lo contrario sucede con el grupo de 29 observaciones y de 129 observaciones de las probabilidades predichas de valor 0.35 y 0.95, respectivamente. 
+
+
+3) Graficamos las **Curvas ROC**
+
+```{r,message=FALSE}
+# Calculamos curvas ROC
+roc_full <- roc(response=prediction_full$asistencia, predictor=prediction_full$.fitted)
+roc_bad <- roc(response=prediction_bad$asistencia, predictor=prediction_bad$.fitted)
+```
+
+Graficamos ambas en un mismo plot.
+
+```{r}
+ggroc(list(full=roc_full, bad=roc_bad), size=1) + 
+  geom_abline(slope = 1, intercept = 1, linetype='dashed') +
+  theme_bw() + 
+  labs(title='Curvas ROC', color='Modelo')
+print(paste('AUC: Modelo bueno', round(roc_full$auc,3)))
+print(paste('AUC: Modelo malo', round(roc_bad$auc,3)))
+
+```
+
+Vemos que la curva ROC del "modelo malo" casi se pega a la línea punteada, indicando que los valores de predicciones de este modelo se asemejan a "tirar una moneda", es decir, existe casi la misma probabilidad (0.50) de predecir que la persona haya ido al cine, al teatro y/o a recitales o no en el último año, cuando se hace la estimación en función de la variable **sexo** solamente. Por otra parte, vemos que nuestro mejor modelo se aleja bastante de esta situación (AUC 0.724).
+
+
+### Punto de corte
+
+Hasta ahora hemos evaluado nuestro mejor modelo de manera general, pero el resultado final debe consistir en asignar a la persona una clase predicha. En nuestro caso, debemos establecer un punto de corte según el cual podamos separar a las personas que fueron el último año al teatro, al cine y/o a recitales de las que no. 
+
+A continuación, probamos varios puntos de corte y graficamos el *accuracy, la sensibilidad o recall, la especificidad y la precisión* para cada uno de ellos.
+
+| Clases predichas / Clases | Negativa | Positiva |
+|--------------------------|---------|----------|
+| Negativa                 | True Neg | False Neg |
+| Positiva                 | False Pos | True Pos |
+
+Recordemos que:
+
+$accuracy = \frac{TP+TN}{TP+FP+FN+TN}$
+
+$sensitivity = recall = \frac{TP}{TP+FN}$
+
+$specificity = \frac{TN}{TN+FP}$
+
+$precision = \frac{TP}{TP+FP}$
+
+```{r}
+prediction_metrics <- function(cutoff, predictions=prediction_full){
+  tab <- predictions %>% 
+    mutate(predicted_class = if_else(.fitted > cutoff, 1, 0),
+           asistencia = factor(asistencia))
+  u <- union(tab$predicted_class, tab$asistencia)
+  t <- table(factor(tab$predicted_class, u), factor(tab$asistencia, u))
+  confusionMatrix(t, positive = "1") %>%
+    tidy() %>%
+    select(term, estimate) %>%
+    filter(term %in% c('accuracy', 'sensitivity', 'specificity', 'precision')) %>%
+    mutate(cutoff = cutoff)
+}
+cutoffs = seq(0.05,0.95,0.01)
+logit_pred = map_df(cutoffs, prediction_metrics) %>% 
+  mutate(term = as.factor(term), estimate = round(estimate, 3))
+ggplot(logit_pred, aes(cutoff,estimate, group=term, color=term)) + geom_line(size=1) +
+  theme_bw() +
+  labs(title= 'Accuracy, Sensitivity, Specificity y Precision', subtitle= 'Modelo bueno', color="")
+```
+En el gráfico observamos que hay una tendencia creciente en cuanto a la estimación de nuestro mejor modelo para puntos de corte mayores en cuanto a *specificity*, mientras que existe una tendencia decreciente para puntos de corte mayores al estimar la *sensibility*. En general, el *accuracy* y la *precision* toman valores por encima del 0.5 para cualquier punto de corte, pero el *accuracy* no toma nunca valores mayores al 0.7, mientras que la *precision* tiene tendencia creciente a mayor valor de punto de corte.
+
+En nuestro caso, por la naturaleza del problema abordado, elegimos un punto de corte para ponderar la sensibility, o *tasa de verdaderos positivos*, en 0.4; ya que en ese punto tenemos un valor relativamente alto para esta tasa, resignando los valores de *specificity* pero con estimaciones por encima del 0.5 tanto de *accuracy* como *precision*.
+
+
+### Dataset de testing
+
+Seleccionamos el modelo **asistencia~ franja_etaria + region + p107**, ya que es el que maximizaba el porcentaje de deviance explicada y, en base a lo que se observa en el gráfico anterior, definimos un punto de corte en 0.4.
+
+Calculamos la matriz de confusión para los datasets de train y test.
+
+```{r,message=FALSE}
+sel_cutoff = 0.4 
+# Creamos el modelo
+full_model <- glm(logit_formulas$franja_region_PSE, family = 'binomial', data = train_data)
+# calculamos las predicciones sobre el dataset de train
+table_train = augment(x = full_model, type.predict='response')
+# Clasificamos utilizamos el punto de corte
+table_train = table_train %>% 
+  mutate(predicted_class = if_else(.fitted>sel_cutoff, 1, 0) %>% as.factor(), 
+         asistencia = factor(asistencia))
+# Creamos la matriz de confusión
+confusionMatrix(table(table_train$predicted_class, table_train$asistencia), positive = "1")
+```
+
+
+```{r,message=FALSE}
+# Agregamos la predicciones al dataset de testeo
+table_test = augment(x = full_model, newdata=test_data, type.predict='response') 
+# Clasificamos utilizamos el punto de corte
+table_test = table_test %>% 
+  mutate(predicted_class = if_else(.fitted>sel_cutoff, 1, 0) %>% as.factor(), 
+         asistencia = factor(asistencia))
+# Creamos la matriz de confusión
+confusionMatrix(table(table_test$predicted_class, table_test$asistencia), positive = "1")
+```
+Con ese punto de corte podemos ver que dada la clase 1 (asistió) los valores para las *métricas en el dataset de testeo* son:
+
+- Accuracy: 0.6171                  
+- Precision: 0.5881
+- Sensitibity: 0.8733
+- Specificity: 0.3412 
+
+Al compararlas con las métricas del data set de entrenamiento, se observa que dismibuyen levemente. Esto es así porque el modelo fue entrenado en el otro dataset (train) y esos mismos datos se utilizaron para elegir el punto de corte. Sin embargo, esta disminución no es llamativa. El Accuracy pasa de 0.6448 a 0.6171, la Precision de 0.6111 a 0.5881, la Sensitibity de 0.8970 a 0.8733 y la Specificity, de 0.3635 a 0.3412.
+
+Los valores superiores a 0.85 de la métrica *Sensitibity* (una medida de la proporción de casos positivos reales que se pronosticaron como positivos, es decir, True Positive), indica que el modelo funcionaría relativamente bien para identificar a las personas que asistieron en el último año al cine, al teatro y/o a recitales.  
+
+Finalmente, tanto en el dataset de entrenamiento como el de testeo, se oberva que el *accuracy es estadísticamente distinto a la clase mayoritaria* (p-value [Acc > NIR] < 0.05). 
+
+
+## Conclusiones
+
+Retomamos la **hipótesis** de la que partimos: las mujeres con hijos y/o que conviven con personas mayores de 65 años van al cine, al teatro y/o a recitales en menor medida que los varones en la misma condición. 
+
+Luego de la aplicación de los modelos de regresión logística presentados, podríamos afirmar que *las variables que tiene mayor influencia sobre la asitencia o no a este tipo de actividades culturales son*: 
+
+- la *región del país*: siendo las personas que viven en la Ciudad Autónoma de Buenos Aires las que tiene mayor probabilidad de haber asistido en el último año al cine, al teatro y/o a espectáculos de música en vivo.
+- la *edad*: quienes tienen mayor probabilidad de haber asistido al cine, al teatro y/o a recitales en el último año son los más jóvenes (entre 12 y 17 años). Al mirar los coeficientes, se observa que la probablidad de haber asistido a este tipo de eventos en el último año, disminuye a medida que la edad de la persona aumenta. 
+- *Principal sostén económico del hogar (PSE)*: las personas que no son el principal sostén económico de los hogares en los que viven tienen mayor probabilidad de haber asistido al cine, al teatro y/o a recitales durante el último año que las que sí lo son. Esto puede estar relacionado con lo obervado en el punto anterior: si quienes tienen mayor probabilidad de haber asistido a este tipo de actividades durante el último año son jóvenes entre 12 y 17, podría ser esperable que quienes tengan mayores probabilidades de asistencia no sean el principal sostén económico de los hogares en los que viven.
+
+Si bien la variable *convive_niñxs_adultosmayores* no formó parte del modelo (múltiple) que logró minimizar la deviance, al ser analizada de forma individual, sí presentó una diferencia estadísticamente significativa: las personas que conviven con niñxs, adolecentes y/o adultos mayores tienen una probabilidad de asistencia al cine, teatro y/o recitales en el último año menor que las personas que no conviven. En línea con nuestra hipótesis incial, podría pensarse entonces que el hecho de convivir con menores y/o personas mayores de 65 años reduce la probabilidad de asistencia a este tipo de actividades. Queda pendiente para futuros trabajos analizar si dicha tendencia puede asociarse o no con tener a cargo tareas de cuidado. 
+
+Finalmente, la variable *sexo* no presentó diferencias significativas en ninguno de los modelos aplicados. 
+
+Consideramos que para **futuras líneas de trabajo** sería interesante plantear la exclusión de CABA como región analizada y/o replicar el análisis pero sólo sobre las personas que tienen entre 30 y 49 años, para observar qué ocurre con la influencia del resto de las variables en los modelos. También puede ser recomendable para futuras investigaciones incorporar variables relacionadas al nivel socioeconómico (NSE) de las personas entrevistadas.
+
